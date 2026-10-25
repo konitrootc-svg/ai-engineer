@@ -1,7 +1,11 @@
 import os
+import logging
 import httpx
 
-API_KEY = os.environ["GEMINI_API_KEY"]
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("ai")
+
+API_KEY = os.environ["GEMINI_API_KEY"].strip()
 MODEL = os.getenv("AI_MODEL", "gemini-flash-latest")
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
@@ -29,10 +33,19 @@ async def ask(user_id: str, text: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=60) as c:
             r = await c.post(URL, headers={"X-goog-api-key": API_KEY}, json=payload)
+        if r.status_code != 200:
+            log.error("Gemini %s: %s", r.status_code, r.text[:500])
         r.raise_for_status()
-        parts = r.json()["candidates"][0]["content"]["parts"]
+        data = r.json()
+        cands = data.get("candidates")
+        if not cands:
+            log.error("No candidates: %s", str(data)[:500])
+            h.pop()
+            return "សូមអភ័យទោស មិនអាចឆ្លើយសំណួរនេះបាន។"
+        parts = cands[0].get("content", {}).get("parts", [])
         answer = "".join(p.get("text", "") for p in parts) or "..."
     except Exception:
+        log.exception("ask() failed")
         h.pop()
         raise
 
