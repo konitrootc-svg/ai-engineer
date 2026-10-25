@@ -23,20 +23,21 @@ TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 WEBHOOK_PATH = "/telegram"
 
 
+async def set_webhook() -> dict:
+    if not (BOT_TOKEN and BASE_URL):
+        return {"error": "TELEGRAM_BOT_TOKEN or RENDER_EXTERNAL_URL missing"}
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(f"{TG_API}/setWebhook", json={"url": BASE_URL + WEBHOOK_PATH})
+    log.info("setWebhook: %s %s", r.status_code, r.text[:200])
+    return {"status": r.status_code, "body": r.json()}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if BOT_TOKEN and BASE_URL:
-        try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(
-                    f"{TG_API}/setWebhook",
-                    json={"url": BASE_URL + WEBHOOK_PATH},
-                )
-            log.info("setWebhook: %s %s", r.status_code, r.text[:200])
-        except Exception:
-            log.exception("setWebhook failed")
-    else:
-        log.warning("TELEGRAM_BOT_TOKEN or RENDER_EXTERNAL_URL missing; Telegram disabled")
+    try:
+        await set_webhook()
+    except Exception:
+        log.exception("setWebhook failed")
     yield
 
 
@@ -100,6 +101,47 @@ async def telegram_webhook(request: Request, background: BackgroundTasks):
     update = await request.json()
     background.add_task(handle_update, update)
     return {"ok": True}
+
+
+@app.get("/debug")
+async def debug():
+    """Open /debug in a browser to see what is wrong. Shows no secrets."""
+    out = {
+        "telegram_token_set": bool(BOT_TOKEN),
+        "render_external_url": BASE_URL or None,
+        "gemini_key_set": bool(ai.API_KEY),
+        "gemini_key_starts_with": ai.API_KEY[:4] if ai.API_KEY else None,
+        "gemini_model": ai.MODEL,
+    }
+    try:
+        out["set_webhook"] = await set_webhook()
+    except Exception as e:
+        out["set_webhook"] = {"error": repr(e)}
+
+    if BOT_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"{TG_API}/getWebhookInfo")
+            info = r.json().get("result", {})
+            out["webhook_info"] = {
+                "url": info.get("url"),
+                "pending_update_count": info.get("pending_update_count"),
+                "last_error_message": info.get("last_error_message"),
+            }
+        except Exception as e:
+            out["webhook_info"] = {"error": repr(e)}
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            r = await c.post(
+                ai.URL,
+                headers={"X-goog-api-key": ai.API_KEY},
+                json={"contents": [{"parts": [{"text": "Say hi"}]}]},
+            )
+        out["gemini_test"] = {"status": r.status_code, "body": r.text[:300]}
+    except Exception as e:
+        out["gemini_test"] = {"error": repr(e)}
+    return out
 
 
 @app.get("/")
